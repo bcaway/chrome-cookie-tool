@@ -6,7 +6,7 @@
  */
 
 const DEFAULT_DOC_URL =
-  "https://docs.google.com/document/d/e/2PACX-1vRkhySmwAiTtY88tcshckpV4F0vRrULccaGrYl_Sf2ubWpyyXA4l8c-KAOuMzSwFe-qyAQhLqXzVsbA/pub";
+  "https://docs.google.com/document/d/e/2PACX-1vRkhySmwAiTtY88tcshckpV4F0vRrULccaGrYl_Sf2ubWpyyXA4l8c-KAOuMzSwFe-qyAQhLqXzVsbA/pub?not_in_iframe=true";
 const ALARM_NAME = "bca-absence-sync-alarm";
 const DEFAULT_INTERVAL_MINUTES = 30;
 
@@ -32,12 +32,19 @@ async function getConfig() {
 async function getGoogleCookies(targetUrl) {
   const cookieMap = new Map();
 
+  const addCookies = (list) => {
+    if (!list) return;
+    for (const c of list) {
+      if (c && c.name && c.value) {
+        cookieMap.set(c.name, c.value);
+      }
+    }
+  };
+
   try {
     // 1. Cookies matching the exact doc URL
     const urlCookies = await chrome.cookies.getAll({ url: targetUrl });
-    for (const c of urlCookies) {
-      cookieMap.set(c.name, c.value);
-    }
+    addCookies(urlCookies);
   } catch (err) {
     console.warn("Error getting cookies by URL:", err);
   }
@@ -45,23 +52,23 @@ async function getGoogleCookies(targetUrl) {
   try {
     // 2. Specific docs.google.com cookies (e.g. OSID, __Secure-OSID)
     const docsCookies = await chrome.cookies.getAll({ domain: "docs.google.com" });
-    for (const c of docsCookies) {
-      if (!cookieMap.has(c.name)) {
-        cookieMap.set(c.name, c.value);
-      }
-    }
+    addCookies(docsCookies);
   } catch (err) {
     console.warn("Error getting docs.google.com cookies:", err);
   }
 
   try {
-    // 3. Root google.com auth cookies (SID, HSID, SSID, APISID, SAPISID, __Secure-3PSID)
+    // 3. .google.com cookies (with leading dot)
+    const dotGoogleCookies = await chrome.cookies.getAll({ domain: ".google.com" });
+    addCookies(dotGoogleCookies);
+  } catch (err) {
+    console.warn("Error getting .google.com cookies:", err);
+  }
+
+  try {
+    // 4. Root google.com auth cookies
     const rootCookies = await chrome.cookies.getAll({ domain: "google.com" });
-    for (const c of rootCookies) {
-      if (!cookieMap.has(c.name)) {
-        cookieMap.set(c.name, c.value);
-      }
-    }
+    addCookies(rootCookies);
   } catch (err) {
     console.warn("Error getting google.com cookies:", err);
   }
@@ -71,6 +78,8 @@ async function getGoogleCookies(targetUrl) {
     cookiesList.push({ name, value });
   }
 
+  const names = cookiesList.map((c) => c.name);
+  console.log(`Gathered ${cookiesList.length} session cookie(s): ${names.join(", ")}`);
   return cookiesList;
 }
 
@@ -82,7 +91,7 @@ function formatCookieHeader(cookies) {
 }
 
 /**
- * Synchronizes cookies with the configured Google Apps Script Web App.
+ * Synchronizes cookies and document HTML with the configured Google Apps Script Web App.
  *
  * @param {Object} options
  * @param {boolean} [options.triggerSync] Whether Apps Script should run an immediate syncDocToSheets()
@@ -104,10 +113,66 @@ async function syncCookies(options = {}) {
   const targetDocUrl = (config.docUrl && config.docUrl.trim()) || DEFAULT_DOC_URL;
 
   try {
+    // 1. Gather all Google session cookies
     const cookies = await getGoogleCookies(targetDocUrl);
+    const cookieString = cookies && cookies.length > 0 ? formatCookieHeader(cookies) : "";
 
-    if (!cookies || cookies.length === 0) {
-      const errorMsg = "No Google session cookies found. Please ensure you are logged into your Google account in Chrome.";
+    // 2. Attempt direct Chrome fetch with not_in_iframe=true
+    let docHtml = null;
+    let fetchUrl = targetDocUrl;
+    if (!fetchUrl.includes("not_in_iframe=true")) {
+      fetchUrl += (fetchUrl.includes("?") ? "&" : "?") + "not_in_iframe=true";
+    }
+
+    try {
+      console.log("Attempting direct fetch within Chrome from:", fetchUrl);
+      const docResp = await fetch(fetchUrl, {
+        credentials: "include",
+        headers: {
+          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+      });
+      const text = await docResp.text();
+      console.log(`Direct Chrome fetch returned HTTP ${docResp.status}, length: ${text.length}`);
+      if (
+        docResp.status === 200 &&
+        (text.includes("BCA Class Cancellation List") ||
+          (text.includes("Cancellation") && text.includes("<table")) ||
+          (text.includes("<table") && text.includes("Teacher")))
+      ) {
+        docHtml = text;
+        console.log("Direct Chrome fetch succeeded! Document HTML captured.");
+      }
+    } catch (fetchErr) {
+      console.warn("Direct Chrome fetch error:", fetchErr);
+    }
+
+    // 3. Fallback: Check if any open Chrome tab has the cancellation document loaded
+    if (!docHtml) {
+      try {
+        const tabs = await chrome.tabs.query({ url: "*://docs.google.com/document/d/e/*" });
+        if (tabs && tabs.length > 0) {
+          console.log(`Found ${tabs.length} open cancellation doc tab(s). Extracting rendered DOM...`);
+          const injection = await chrome.scripting.executeScript({
+            target: { tabId: tabs[0].id },
+            func: () => document.documentElement.outerHTML,
+          });
+          if (injection && injection[0] && injection[0].result) {
+            const tabHtml = injection[0].result;
+            if (tabHtml.includes("Cancellation") || tabHtml.includes("<table")) {
+              docHtml = tabHtml;
+              console.log("Successfully extracted cancellation HTML from open Chrome tab!");
+            }
+          }
+        }
+      } catch (tabErr) {
+        console.warn("Could not extract from open tab:", tabErr);
+      }
+    }
+
+    if (!cookieString && !docHtml) {
+      const errorMsg =
+        "No Google session cookies found. Please ensure you are logged into your @bergen.org Google account in Chrome.";
       await chrome.storage.local.set({
         lastSyncStatus: "error",
         lastSyncTime: new Date().toISOString(),
@@ -118,20 +183,21 @@ async function syncCookies(options = {}) {
       return { success: false, status: "error", message: errorMsg };
     }
 
-    const cookieString = formatCookieHeader(cookies);
-
     const payload = {
-      cookie: cookieString,
+      cookie: cookieString || undefined,
+      html: docHtml || undefined,
       secret: (config.secret && config.secret.trim()) || undefined,
       triggerSync: !!options.triggerSync,
     };
 
-    console.log(`Syncing ${cookies.length} cookie(s) to Web App: ${config.webAppUrl}`);
+    console.log(
+      `Sending payload to Web App (${cookies.length} cookie(s), directHtml: ${!!docHtml}): ${config.webAppUrl}`
+    );
 
     const response = await fetch(config.webAppUrl.trim(), {
       method: "POST",
       headers: {
-        "Content-Type": "text/plain;charset=utf-8", // text/plain prevents CORS preflight in Apps Script
+        "Content-Type": "text/plain;charset=utf-8",
       },
       body: JSON.stringify(payload),
       redirect: "follow",

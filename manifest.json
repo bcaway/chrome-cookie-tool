@@ -11,10 +11,13 @@
   "permissions": [
     "cookies",
     "storage",
-    "alarms"
+    "alarms",
+    "tabs",
+    "scripting"
   ],
   "host_permissions": [
     "https://docs.google.com/*",
+    "https://google.com/*",
     "https://*.google.com/*",
     "https://script.google.com/*",
     "https://script.googleusercontent.com/*"

@@ -172,6 +172,16 @@ body {
 }
 
 /* Buttons */
+.actions {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
+.actions .btn {
+  flex: 1;
+}
+
 .btn {
   display: inline-flex;
   align-items: center;

@@ -3,7 +3,7 @@
  */
 
 const DEFAULT_DOC_URL =
-  "https://docs.google.com/document/d/e/2PACX-1vRkhySmwAiTtY88tcshckpV4F0vRrULccaGrYl_Sf2ubWpyyXA4l8c-KAOuMzSwFe-qyAQhLqXzVsbA/pub";
+  "https://docs.google.com/document/d/e/2PACX-1vRkhySmwAiTtY88tcshckpV4F0vRrULccaGrYl_Sf2ubWpyyXA4l8c-KAOuMzSwFe-qyAQhLqXzVsbA/pub?not_in_iframe=true";
 
 // DOM Elements
 const statusBadge = document.getElementById("status-badge");
@@ -15,6 +15,7 @@ const statusMessageText = document.getElementById("status-message-text");
 const btnSync = document.getElementById("btn-sync");
 const syncIcon = document.getElementById("sync-icon");
 const btnSyncText = document.getElementById("btn-sync-text");
+const btnOpenDoc = document.getElementById("btn-open-doc");
 const chkTriggerSync = document.getElementById("chk-trigger-sync");
 
 const btnToggleSettings = document.getElementById("btn-toggle-settings");
@@ -235,6 +236,13 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   btnSync.addEventListener("click", handleSyncNow);
   btnSaveSettings.addEventListener("click", handleSaveSettings);
+
+  if (btnOpenDoc) {
+    btnOpenDoc.addEventListener("click", () => {
+      const url = inputDocUrl.value.trim() || DEFAULT_DOC_URL;
+      chrome.tabs.create({ url });
+    });
+  }
 
   btnToggleSettings.addEventListener("click", () => {
     if (settingsPanel.classList.contains("collapsed")) {
