@@ -10,6 +10,126 @@ const DEFAULT_DOC_URL =
 const ALARM_NAME = "bca-absence-sync-alarm";
 const DEFAULT_INTERVAL_MINUTES = 30;
 
+// Explicitly filter out foreign subdomain and account chooser cookies
+const DISALLOWED_COOKIE_NAMES = new Set([
+  "ACCOUNT_CHOOSER",
+  "PLAY_ACTIVE_ACCOUNT",
+  "GG_ACTIVE_ACCOUNT",
+  "GG_XSRF",
+  "GMAIL_AT",
+  "__Host-GAPS",
+  "LSID",
+  "__Host-1PLSID",
+  "__Host-3PLSID",
+  "LSOLH",
+  "SNID",
+  "SMSV",
+  "COMPASS",
+]);
+
+const ALLOWED_COOKIE_NAMES = new Set([
+  "OSID",
+  "__Secure-OSID",
+  "SID",
+  "HSID",
+  "SSID",
+  "APISID",
+  "SAPISID",
+  "__Secure-1PAPISID",
+  "__Secure-3PAPISID",
+  "__Secure-1PSID",
+  "__Secure-3PSID",
+  "__Secure-1PSIDTS",
+  "__Secure-3PSIDTS",
+  "__Secure-1PSIDCC",
+  "__Secure-3PSIDCC",
+  "NID",
+  "S",
+  "OTZ",
+]);
+
+function isRelevantDocCookie(c) {
+  if (!c || !c.name || !c.value) return false;
+  if (DISALLOWED_COOKIE_NAMES.has(c.name)) return false;
+  if (c.name.startsWith("__Host-GMAIL") || c.name.startsWith("GMAIL")) return false;
+  if (c.name.startsWith("__Host-") && !c.name.includes("OSID") && !c.name.includes("SID")) return false;
+  if (ALLOWED_COOKIE_NAMES.has(c.name)) return true;
+  if (c.domain && c.domain.includes("docs.google.com")) return true;
+  return false;
+}
+
+function hasCancellationContent(html) {
+  if (!html) return false;
+  return (
+    html.includes("BCA Class Cancellation List") ||
+    (html.includes("Cancellation") && /<table[^>]*>/i.test(html)) ||
+    (html.includes("Cancellation List") && /<table[^>]*>/i.test(html)) ||
+    (/<table[^>]*>/i.test(html) && /Teacher/i.test(html))
+  );
+}
+
+/**
+ * Silently opens an inactive background tab to load the document in Chrome's authenticated
+ * context, extracts the rendered outerHTML, and immediately closes the tab.
+ */
+async function captureDocHtmlViaBackgroundTab(url, timeoutMs = 10000) {
+  return new Promise((resolve) => {
+    let tabId = null;
+    let timer = null;
+    let finished = false;
+
+    const cleanup = () => {
+      if (finished) return;
+      finished = true;
+      if (timer) clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(updateListener);
+      if (tabId) {
+        chrome.tabs.remove(tabId).catch(() => {});
+      }
+    };
+
+    const updateListener = async (updatedTabId, changeInfo) => {
+      if (finished || updatedTabId !== tabId) return;
+      if (changeInfo.status === "complete") {
+        try {
+          // Allow DOM scripts 800ms to render table elements
+          await new Promise((r) => setTimeout(r, 800));
+          const injection = await chrome.scripting.executeScript({
+            target: { tabId },
+            func: () => document.documentElement.outerHTML,
+          });
+          const html = injection && injection[0] ? injection[0].result : null;
+          if (html && hasCancellationContent(html)) {
+            cleanup();
+            resolve(html);
+            return;
+          }
+        } catch (err) {
+          console.warn("Background tab DOM extraction error:", err);
+        }
+        cleanup();
+        resolve(null);
+      }
+    };
+
+    chrome.tabs.onUpdated.addListener(updateListener);
+
+    timer = setTimeout(() => {
+      cleanup();
+      resolve(null);
+    }, timeoutMs);
+
+    chrome.tabs.create({ url, active: false }, (tab) => {
+      if (chrome.runtime.lastError || !tab) {
+        cleanup();
+        resolve(null);
+      } else {
+        tabId = tab.id;
+      }
+    });
+  });
+}
+
 /**
  * Retrieves extension settings from chrome.storage.local with defaults.
  */
@@ -17,6 +137,7 @@ async function getConfig() {
   const defaults = {
     webAppUrl: "",
     docUrl: DEFAULT_DOC_URL,
+    authUser: "kabsek30@bergen.org",
     secret: "",
     syncIntervalMinutes: DEFAULT_INTERVAL_MINUTES,
     autoSync: true,
@@ -27,7 +148,8 @@ async function getConfig() {
 
 /**
  * Gathers relevant Google session cookies for the target Google Doc URL.
- * Combines URL-specific cookies with docs.google.com and google.com cookies.
+ * Combines URL-specific cookies with docs.google.com and google.com cookies,
+ * filtering out foreign subdomain and account chooser cookies.
  */
 async function getGoogleCookies(targetUrl) {
   const cookieMap = new Map();
@@ -35,7 +157,7 @@ async function getGoogleCookies(targetUrl) {
   const addCookies = (list) => {
     if (!list) return;
     for (const c of list) {
-      if (c && c.name && c.value) {
+      if (isRelevantDocCookie(c)) {
         cookieMap.set(c.name, c.value);
       }
     }
@@ -65,21 +187,13 @@ async function getGoogleCookies(targetUrl) {
     console.warn("Error getting .google.com cookies:", err);
   }
 
-  try {
-    // 4. Root google.com auth cookies
-    const rootCookies = await chrome.cookies.getAll({ domain: "google.com" });
-    addCookies(rootCookies);
-  } catch (err) {
-    console.warn("Error getting google.com cookies:", err);
-  }
-
   const cookiesList = [];
   for (const [name, value] of cookieMap.entries()) {
     cookiesList.push({ name, value });
   }
 
   const names = cookiesList.map((c) => c.name);
-  console.log(`Gathered ${cookiesList.length} session cookie(s): ${names.join(", ")}`);
+  console.log(`Gathered ${cookiesList.length} relevant session cookie(s): ${names.join(", ")}`);
   return cookiesList;
 }
 
@@ -110,63 +224,80 @@ async function syncCookies(options = {}) {
     return { success: false, status: "unconfigured", message: errorMsg };
   }
 
-  const targetDocUrl = (config.docUrl && config.docUrl.trim()) || DEFAULT_DOC_URL;
+  let targetDocUrl = (config.docUrl && config.docUrl.trim()) || DEFAULT_DOC_URL;
+
+  // Ensure not_in_iframe parameter
+  if (!targetDocUrl.includes("not_in_iframe=true")) {
+    targetDocUrl += (targetDocUrl.includes("?") ? "&" : "?") + "not_in_iframe=true";
+  }
+
+  // Ensure authuser parameter if configured
+  if (config.authUser && !targetDocUrl.includes("authuser=")) {
+    targetDocUrl += `&authuser=${encodeURIComponent(config.authUser.trim())}`;
+  }
 
   try {
-    // 1. Gather all Google session cookies
+    // 1. Gather all filtered Google session cookies
     const cookies = await getGoogleCookies(targetDocUrl);
     const cookieString = cookies && cookies.length > 0 ? formatCookieHeader(cookies) : "";
 
-    // 2. Attempt direct Chrome fetch with not_in_iframe=true
     let docHtml = null;
-    let fetchUrl = targetDocUrl;
-    if (!fetchUrl.includes("not_in_iframe=true")) {
-      fetchUrl += (fetchUrl.includes("?") ? "&" : "?") + "not_in_iframe=true";
-    }
 
+    // 2. Check if any open Chrome tab has the cancellation document loaded
     try {
-      console.log("Attempting direct fetch within Chrome from:", fetchUrl);
-      const docResp = await fetch(fetchUrl, {
-        credentials: "include",
-        headers: {
-          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        },
-      });
-      const text = await docResp.text();
-      console.log(`Direct Chrome fetch returned HTTP ${docResp.status}, length: ${text.length}`);
-      if (
-        docResp.status === 200 &&
-        (text.includes("BCA Class Cancellation List") ||
-          (text.includes("Cancellation") && text.includes("<table")) ||
-          (text.includes("<table") && text.includes("Teacher")))
-      ) {
-        docHtml = text;
-        console.log("Direct Chrome fetch succeeded! Document HTML captured.");
-      }
-    } catch (fetchErr) {
-      console.warn("Direct Chrome fetch error:", fetchErr);
-    }
-
-    // 3. Fallback: Check if any open Chrome tab has the cancellation document loaded
-    if (!docHtml) {
-      try {
-        const tabs = await chrome.tabs.query({ url: "*://docs.google.com/document/d/e/*" });
-        if (tabs && tabs.length > 0) {
-          console.log(`Found ${tabs.length} open cancellation doc tab(s). Extracting rendered DOM...`);
+      const tabs = await chrome.tabs.query({ url: "*://docs.google.com/document/d/e/*" });
+      if (tabs && tabs.length > 0) {
+        console.log(`Found ${tabs.length} open cancellation doc tab(s). Extracting rendered DOM...`);
+        for (const tab of tabs) {
           const injection = await chrome.scripting.executeScript({
-            target: { tabId: tabs[0].id },
+            target: { tabId: tab.id },
             func: () => document.documentElement.outerHTML,
           });
           if (injection && injection[0] && injection[0].result) {
             const tabHtml = injection[0].result;
-            if (tabHtml.includes("Cancellation") || tabHtml.includes("<table")) {
+            if (hasCancellationContent(tabHtml)) {
               docHtml = tabHtml;
               console.log("Successfully extracted cancellation HTML from open Chrome tab!");
+              break;
             }
           }
         }
-      } catch (tabErr) {
-        console.warn("Could not extract from open tab:", tabErr);
+      }
+    } catch (tabErr) {
+      console.warn("Could not extract from open tab:", tabErr);
+    }
+
+    // 3. Attempt direct Chrome fetch with not_in_iframe=true & authuser
+    if (!docHtml) {
+      try {
+        console.log("Attempting direct fetch within Chrome from:", targetDocUrl);
+        const docResp = await fetch(targetDocUrl, {
+          credentials: "include",
+          headers: {
+            Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          },
+        });
+        const text = await docResp.text();
+        console.log(`Direct Chrome fetch returned HTTP ${docResp.status}, length: ${text.length}`);
+        if (docResp.status === 200 && hasCancellationContent(text)) {
+          docHtml = text;
+          console.log("Direct Chrome fetch succeeded! Document HTML captured.");
+        }
+      } catch (fetchErr) {
+        console.warn("Direct Chrome fetch error:", fetchErr);
+      }
+    }
+
+    // 4. Fallback: Silent background tab capture
+    if (!docHtml) {
+      try {
+        console.log("Attempting background tab render & DOM capture for:", targetDocUrl);
+        docHtml = await captureDocHtmlViaBackgroundTab(targetDocUrl);
+        if (docHtml) {
+          console.log("Background tab capture succeeded! Captured HTML length:", docHtml.length);
+        }
+      } catch (bgErr) {
+        console.warn("Background tab capture error:", bgErr);
       }
     }
 
@@ -186,6 +317,7 @@ async function syncCookies(options = {}) {
     const payload = {
       cookie: cookieString || undefined,
       html: docHtml || undefined,
+      authUser: (config.authUser && config.authUser.trim()) || undefined,
       secret: (config.secret && config.secret.trim()) || undefined,
       triggerSync: !!options.triggerSync,
     };
@@ -209,7 +341,6 @@ async function syncCookies(options = {}) {
     try {
       resultJson = JSON.parse(responseText);
     } catch {
-      // Sometimes Apps Script returns HTML or redirect text
       if (response.ok && responseText.includes("success")) {
         resultJson = { status: "success", message: "Cookie updated successfully." };
       } else {
@@ -221,7 +352,9 @@ async function syncCookies(options = {}) {
     }
 
     if (resultJson && resultJson.status === "success") {
-      const successMsg = resultJson.message || "Cookie synchronized successfully.";
+      const successMsg =
+        resultJson.message ||
+        (docHtml ? "Cancellation document and cookies synchronized successfully." : "Cookie synchronized successfully.");
       const nowIso = new Date().toISOString();
       await chrome.storage.local.set({
         lastSyncStatus: "success",
@@ -237,6 +370,7 @@ async function syncCookies(options = {}) {
         message: successMsg,
         updatedAt: nowIso,
         cookieCount: cookies.length,
+        hasDirectHtml: !!docHtml,
       };
     } else {
       const errorMsg =

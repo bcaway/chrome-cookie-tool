@@ -26,6 +26,7 @@ const inputWebAppUrl = document.getElementById("input-webapp-url");
 const inputSecret = document.getElementById("input-secret");
 const selectInterval = document.getElementById("select-interval");
 const chkAutosync = document.getElementById("chk-autosync");
+const inputAuthUser = document.getElementById("input-authuser");
 const inputDocUrl = document.getElementById("input-doc-url");
 const btnResetDocUrl = document.getElementById("btn-reset-doc-url");
 const btnSaveSettings = document.getElementById("btn-save-settings");
@@ -124,6 +125,7 @@ function updateUiWithStatus(data) {
     inputSecret.value = config.secret || "";
     selectInterval.value = String(config.syncIntervalMinutes || 30);
     chkAutosync.checked = config.autoSync !== false;
+    if (inputAuthUser) inputAuthUser.value = config.authUser || "kabsek30@bergen.org";
     inputDocUrl.value = config.docUrl || DEFAULT_DOC_URL;
   }
 }
@@ -197,6 +199,7 @@ async function handleSaveSettings() {
     secret: inputSecret.value.trim(),
     syncIntervalMinutes: parseInt(selectInterval.value, 10) || 30,
     autoSync: chkAutosync.checked,
+    authUser: (inputAuthUser ? inputAuthUser.value.trim() : "") || "kabsek30@bergen.org",
     docUrl: inputDocUrl.value.trim() || DEFAULT_DOC_URL,
   };
 
