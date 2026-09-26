@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BCA Absence Sync</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo-group">
+        <div class="logo-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+            <line x1="16" y1="13" x2="8" y2="13"></line>
+            <line x1="16" y1="17" x2="8" y2="17"></line>
+            <polyline points="10 9 9 9 8 9"></polyline>
+          </svg>
+        </div>
+        <div>
+          <h1 class="title">BCA Absence Sync</h1>
+          <span class="subtitle">Cloud Cookie Sync Tool</span>
+        </div>
+      </div>
+      <span id="status-badge" class="badge badge-idle">Checking...</span>
+    </header>
+
+    <!-- Main Status Card -->
+    <div class="card status-card">
+      <div class="status-row">
+        <span class="label">Google Session:</span>
+        <span id="cookie-status-text" class="value">Detecting cookies...</span>
+      </div>
+      <div class="status-row">
+        <span class="label">Last Synced:</span>
+        <span id="last-sync-time" class="value">Never</span>
+      </div>
+      <div id="status-message-box" class="message-box message-box-hidden">
+        <p id="status-message-text"></p>
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="actions">
+        <button id="btn-sync" class="btn btn-primary">
+          <svg id="sync-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"></polyline>
+            <polyline points="1 20 1 14 7 14"></polyline>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+          </svg>
+          <span id="btn-sync-text">Sync Cookie Now</span>
+        </button>
+      </div>
+      <div class="trigger-option">
+        <label class="checkbox-label">
+          <input type="checkbox" id="chk-trigger-sync" checked>
+          <span>Also run doc-to-sheets sync immediately</span>
+        </label>
+      </div>
+    </div>
+
+    <!-- Configuration Section -->
+    <div class="settings-toggle-container">
+      <button id="btn-toggle-settings" class="btn-text">
+        <span id="settings-toggle-icon">▸</span>
+        <span>Configuration & Settings</span>
+      </button>
+    </div>
+
+    <div id="settings-panel" class="settings-panel collapsed">
+      <div class="card">
+        <div class="form-group">
+          <label for="input-webapp-url" class="form-label">
+            Apps Script Web App URL <span class="required">*</span>
+          </label>
+          <input
+            type="url"
+            id="input-webapp-url"
+            class="form-input"
+            placeholder="https://script.google.com/macros/s/.../exec"
+            autocomplete="off"
+            spellcheck="false"
+          >
+          <span class="help-text">From Google Apps Script: Deploy &gt; Manage deployments &gt; Web app URL</span>
+        </div>
+
+        <div class="form-group">
+          <label for="input-secret" class="form-label">
+            Sync Secret (Optional)
+          </label>
+          <input
+            type="password"
+            id="input-secret"
+            class="form-input"
+            placeholder="Matches SYNC_SECRET if configured"
+            autocomplete="off"
+          >
+        </div>
+
+        <div class="form-group">
+          <label for="select-interval" class="form-label">Auto-Sync Frequency</label>
+          <select id="select-interval" class="form-input">
+            <option value="15">Every 15 minutes</option>
+            <option value="30" selected>Every 30 minutes (Recommended)</option>
+            <option value="60">Every 1 hour</option>
+            <option value="120">Every 2 hours</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="chk-autosync" checked>
+            <span>Enable background auto-sync while Chrome is running</span>
+          </label>
+        </div>
+
+        <div class="form-group">
+          <label for="input-doc-url" class="form-label">Target Published Doc URL</label>
+          <input
+            type="url"
+            id="input-doc-url"
+            class="form-input"
+            autocomplete="off"
+            spellcheck="false"
+          >
+          <button id="btn-reset-doc-url" type="button" class="btn-link">Reset to BCA Cancellation List</button>
+        </div>
+
+        <div class="settings-actions">
+          <button id="btn-save-settings" class="btn btn-secondary">Save Configuration</button>
+          <span id="save-status" class="save-status"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <span>Auto-refreshes Google Apps Script so 24/7 triggers run uninterrupted.</span>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
