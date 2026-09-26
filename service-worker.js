@@ -228,26 +228,22 @@ async function syncCookies(options = {}) {
     return { success: false, status: "unconfigured", message: errorMsg };
   }
 
-  let targetDocUrl = (config.docUrl && config.docUrl.trim()) || DEFAULT_DOC_URL;
+  let cleanDocUrl = (config.docUrl && config.docUrl.trim()) || DEFAULT_DOC_URL;
 
-  // Ensure not_in_iframe parameter
-  if (!targetDocUrl.includes("not_in_iframe=true")) {
-    targetDocUrl += (targetDocUrl.includes("?") ? "&" : "?") + "not_in_iframe=true";
-  }
-
-  // Ensure authuser parameter if configured
-  if (config.authUser && !targetDocUrl.includes("authuser=")) {
-    targetDocUrl += `&authuser=${encodeURIComponent(config.authUser.trim())}`;
+  // Clean published doc URL (remove broken authuser parameter that causes redirects on /pub)
+  cleanDocUrl = cleanDocUrl.replace(/[?&]authuser=[^&]+/gi, "");
+  if (!cleanDocUrl.includes("not_in_iframe=true")) {
+    cleanDocUrl += (cleanDocUrl.includes("?") ? "&" : "?") + "not_in_iframe=true";
   }
 
   try {
-    // 1. Gather all filtered Google session cookies
-    const cookies = await getGoogleCookies(targetDocUrl);
+    // 1. Gather all filtered Google session cookies (fast, ~10ms)
+    const cookies = await getGoogleCookies(cleanDocUrl);
     const cookieString = cookies && cookies.length > 0 ? formatCookieHeader(cookies) : "";
 
     let docHtml = null;
 
-    // 2. Check if any open Chrome tab has the cancellation document loaded
+    // 2. Fast check: Extract from any open Chrome tab containing the document (<50ms)
     try {
       const allTabs = await chrome.tabs.query({});
       const docTabs = allTabs.filter(
@@ -278,32 +274,11 @@ async function syncCookies(options = {}) {
       console.warn("Could not extract from open tab:", tabErr);
     }
 
-    // 3. Attempt direct Chrome fetch with not_in_iframe=true & authuser
+    // 3. Fallback: Rapid background tab capture (max 3.5s timeout)
     if (!docHtml) {
       try {
-        console.log("Attempting direct fetch within Chrome from:", targetDocUrl);
-        const docResp = await fetch(targetDocUrl, {
-          credentials: "include",
-          headers: {
-            Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-          },
-        });
-        const text = await docResp.text();
-        console.log(`Direct Chrome fetch returned HTTP ${docResp.status}, length: ${text.length}`);
-        if (docResp.status === 200 && hasCancellationContent(text)) {
-          docHtml = text;
-          console.log("Direct Chrome fetch succeeded! Document HTML captured.");
-        }
-      } catch (fetchErr) {
-        console.warn("Direct Chrome fetch error:", fetchErr);
-      }
-    }
-
-    // 4. Fallback: Silent background tab capture
-    if (!docHtml) {
-      try {
-        console.log("Attempting background tab render & DOM capture for:", targetDocUrl);
-        docHtml = await captureDocHtmlViaBackgroundTab(targetDocUrl);
+        console.log("Attempting fast background tab render & DOM capture for:", cleanDocUrl);
+        docHtml = await captureDocHtmlViaBackgroundTab(cleanDocUrl, 3500);
         if (docHtml) {
           console.log("Background tab capture succeeded! Captured HTML length:", docHtml.length);
         }
