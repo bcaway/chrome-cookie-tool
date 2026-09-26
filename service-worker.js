@@ -72,49 +72,53 @@ function hasCancellationContent(html) {
  * Silently opens an inactive background tab to load the document in Chrome's authenticated
  * context, extracts the rendered outerHTML, and immediately closes the tab.
  */
-async function captureDocHtmlViaBackgroundTab(url, timeoutMs = 10000) {
+async function captureDocHtmlViaBackgroundTab(url, timeoutMs = 12000) {
   return new Promise((resolve) => {
     let tabId = null;
-    let timer = null;
+    let pollInterval = null;
+    let timeoutTimer = null;
     let finished = false;
 
     const cleanup = () => {
       if (finished) return;
       finished = true;
-      if (timer) clearTimeout(timer);
-      chrome.tabs.onUpdated.removeListener(updateListener);
+      if (pollInterval) clearInterval(pollInterval);
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      chrome.tabs.onUpdated.removeListener(onUpdatedListener);
       if (tabId) {
         chrome.tabs.remove(tabId).catch(() => {});
       }
     };
 
-    const updateListener = async (updatedTabId, changeInfo) => {
-      if (finished || updatedTabId !== tabId) return;
-      if (changeInfo.status === "complete") {
-        try {
-          // Allow DOM scripts 800ms to render table elements
-          await new Promise((r) => setTimeout(r, 800));
-          const injection = await chrome.scripting.executeScript({
-            target: { tabId },
-            func: () => document.documentElement.outerHTML,
-          });
-          const html = injection && injection[0] ? injection[0].result : null;
-          if (html && hasCancellationContent(html)) {
-            cleanup();
-            resolve(html);
-            return;
-          }
-        } catch (err) {
-          console.warn("Background tab DOM extraction error:", err);
+    const tryExtract = async () => {
+      if (finished || !tabId) return;
+      try {
+        const injection = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: () => document.documentElement.outerHTML,
+        });
+        const html = injection && injection[0] ? injection[0].result : null;
+        if (html && hasCancellationContent(html)) {
+          cleanup();
+          resolve(html);
         }
-        cleanup();
-        resolve(null);
+      } catch (err) {
+        // Tab might still be navigating or executing scripts
       }
     };
 
-    chrome.tabs.onUpdated.addListener(updateListener);
+    const onUpdatedListener = (updatedTabId, changeInfo) => {
+      if (updatedTabId === tabId && changeInfo.status === "complete") {
+        if (!pollInterval) {
+          setTimeout(tryExtract, 500);
+          pollInterval = setInterval(tryExtract, 500);
+        }
+      }
+    };
 
-    timer = setTimeout(() => {
+    chrome.tabs.onUpdated.addListener(onUpdatedListener);
+
+    timeoutTimer = setTimeout(() => {
       cleanup();
       resolve(null);
     }, timeoutMs);
@@ -245,10 +249,17 @@ async function syncCookies(options = {}) {
 
     // 2. Check if any open Chrome tab has the cancellation document loaded
     try {
-      const tabs = await chrome.tabs.query({ url: "*://docs.google.com/document/d/e/*" });
-      if (tabs && tabs.length > 0) {
-        console.log(`Found ${tabs.length} open cancellation doc tab(s). Extracting rendered DOM...`);
-        for (const tab of tabs) {
+      const allTabs = await chrome.tabs.query({});
+      const docTabs = allTabs.filter(
+        (t) =>
+          t.url &&
+          (t.url.includes("docs.google.com/document/d/e/") ||
+            t.url.includes("2PACX-1vRkhySmwAiTtY88tcshckpV4F0vRrULccaGrYl_Sf2ubWpyyXA4l8c-KAOuMzSwFe-qyAQhLqXzVsbA"))
+      );
+
+      if (docTabs && docTabs.length > 0) {
+        console.log(`Found ${docTabs.length} open cancellation doc tab(s). Extracting rendered DOM...`);
+        for (const tab of docTabs) {
           const injection = await chrome.scripting.executeScript({
             target: { tabId: tab.id },
             func: () => document.documentElement.outerHTML,
